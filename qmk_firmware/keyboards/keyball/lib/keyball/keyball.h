@@ -48,6 +48,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #    define KEYBALL_SCROLLSNAP_TENSION_THRESHOLD 12
 #endif
 
+/// Specify SROM ID to be uploaded PMW3360DW (optical sensor).  It will be
+/// enabled high CPI setting or so.  Valid valus are 0x04 or 0x81.  Define this
+/// in your config.h to be enable.  Please note that using this option will
+/// increase the firmware size by more than 4KB.
+//#define KEYBALL_PMW3360_UPLOAD_SROM_ID 0x04
+//#define KEYBALL_PMW3360_UPLOAD_SROM_ID 0x81
+
 //////////////////////////////////////////////////////////////////////////////
 // Constants
 
@@ -66,6 +73,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #elif (PRODUCT_ID & 0xff00) == 0x0400
 #    define KEYBALL_MODEL 44
 #endif
+
+#define KEYBALL_OLED_MAX_PRESSING_KEYCODES 3
 
 //////////////////////////////////////////////////////////////////////////////
 // Types
@@ -130,6 +139,9 @@ typedef struct {
     uint16_t       last_kc;
     keypos_t       last_pos;
     report_mouse_t last_mouse;
+
+    // Buffer to indicate pressing keys.
+    char pressing_keys[KEYBALL_OLED_MAX_PRESSING_KEYCODES + 1];
 } keyball_t;
 
 typedef enum {

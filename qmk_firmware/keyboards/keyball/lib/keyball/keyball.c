@@ -23,6 +23,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "keyball.h"
 #include "drivers/pmw3360/pmw3360.h"
 
+#include <string.h>
+
 const uint8_t CPI_DEFAULT    = KEYBALL_CPI_DEFAULT / 100;
 const uint8_t CPI_MAX        = pmw3360_MAXCPI + 1;
 const uint8_t SCROLL_DIV_MAX = 7;
@@ -40,6 +42,8 @@ keyball_t keyball = {
 
     .scroll_mode = false,
     .scroll_div  = 0,
+
+    .pressing_keys = {' ', ' ', ' ', 0},
 };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -58,6 +62,14 @@ static int16_t add16(int16_t a, int16_t b) {
     } else if (a < 0 && b < 0 && r >= 0) {
         r = -32768;
     }
+    return r;
+}
+
+// divmod16 divides *v by div, returns the quotient, and assigns the remainder
+// to *v.
+static int16_t divmod16(int16_t *v, int16_t div) {
+    int16_t r = *v / div;
+    *v -= r * div;
     return r;
 }
 
@@ -125,8 +137,16 @@ void pointing_device_driver_init(void) {
     keyball.this_have_ball = pmw3360_init();
 #endif
     if (keyball.this_have_ball) {
+#if defined(KEYBALL_PMW3360_UPLOAD_SROM_ID)
+#    if KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x04
+        pmw3360_srom_upload(pmw3360_srom_0x04);
+#    elif KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x81
+        pmw3360_srom_upload(pmw3360_srom_0x81);
+#    else
+#        error Invalid value for KEYBALL_PMW3360_UPLOAD_SROM_ID. Please choose 0x04 or 0x81 or disable it.
+#    endif
+#endif
         pmw3360_cpi_set(CPI_DEFAULT - 1);
-        pmw3360_reg_write(pmw3360_Motion_Burst, 0);
     }
 }
 
@@ -159,11 +179,9 @@ static void motion_to_mouse_move(keyball_motion_t *m, report_mouse_t *r, bool is
 
 static void motion_to_mouse_scroll(keyball_motion_t *m, report_mouse_t *r, bool is_left) {
     // consume motion of trackball.
-    uint8_t div = keyball_get_scroll_div() - 1;
-    int16_t x   = m->x >> div;
-    m->x -= x << div;
-    int16_t y = m->y >> div;
-    m->y -= y << div;
+    int16_t div = 1 << (keyball_get_scroll_div() - 1);
+    int16_t x = divmod16(&m->x, div);
+    int16_t y = divmod16(&m->y, div);
 
     // apply to mouse report.
 #if KEYBALL_MODEL == 61 || KEYBALL_MODEL == 39 || KEYBALL_MODEL == 147 || KEYBALL_MODEL == 44
@@ -377,15 +395,18 @@ void keyball_oled_render_ballinfo(void) {
 
 void keyball_oled_render_keyinfo(void) {
 #ifdef OLED_ENABLE
-    // Format: `Key :  R{row}  C{col} K{kc}  '{name}`
+    // Format: `Key :  R{row}  C{col} K{kc} {name}{name}{name}`
     //
     // Where `kc` is lower 8 bit of keycode.
-    // Where `name` is readable label for `kc`, valid between 4 and 56.
+    // Where `name`s are readable labels for pressing keys, valid between 4 and 56.
+    //
+    // `row`, `col`, and `kc` indicates the last processed key,
+    // but `name`s indicate unreleased keys in best effort.
     //
     // It is aligned to fit with output of keyball_oled_render_ballinfo().
     // For example:
     //
-    //     Key :  R2  C3 K06  'c
+    //     Key :  R2  C3 K06 abc
     //     Ball:   0   0   0   0
     //
     uint8_t keycode = keyball.last_kc;
@@ -394,18 +415,14 @@ void keyball_oled_render_keyinfo(void) {
     oled_write_char(to_1x(keyball.last_pos.row), false);
     oled_write_P(PSTR("  C"), false);
     oled_write_char(to_1x(keyball.last_pos.col), false);
-    if (keycode) {
-        oled_write_P(PSTR(" K"), false);
-        oled_write_char(to_1x(keycode >> 4), false);
-        oled_write_char(to_1x(keycode), false);
-    }
-    if (keycode >= 4 && keycode < 57) {
-        oled_write_P(PSTR("  '"), false);
-        char name = pgm_read_byte(code_to_name + keycode - 4);
-        oled_write_char(name, false);
-    } else {
-        oled_advance_page(true);
-    }
+    oled_write_P(PSTR(" K"), false);
+    oled_write_char(to_1x(keycode >> 4), false);
+    oled_write_char(to_1x(keycode), false);
+
+    oled_write_char(' ', false);
+
+    // Draw pressing keys.
+    oled_write(keyball.pressing_keys, false);
 #endif
 }
 
@@ -458,7 +475,6 @@ void keyball_set_cpi(uint8_t cpi) {
     keyball.cpi_changed = true;
     if (keyball.this_have_ball) {
         pmw3360_cpi_set(cpi == 0 ? CPI_DEFAULT - 1 : cpi - 1);
-        pmw3360_reg_write(pmw3360_Motion_Burst, 0);
     }
 }
 
@@ -498,10 +514,32 @@ void housekeeping_task_kb(void) {
 }
 #endif
 
+static void pressing_keys_update(uint16_t keycode, keyrecord_t *record) {
+    // Process only valid keycodes.
+    if (keycode >= 4 && keycode < 57) {
+        char value = pgm_read_byte(code_to_name + keycode - 4);
+        char where = ' ';
+        if (!record->event.pressed) {
+            // Swap `value` and `where` when releasing.
+            where = value;
+            value = ' ';
+        }
+        // Rewrite the last `where` of pressing_keys to `value` .
+        for (int i = KEYBALL_OLED_MAX_PRESSING_KEYCODES - 1; i >= 0; i--) {
+            if (keyball.pressing_keys[i] == where) {
+                keyball.pressing_keys[i] = value;
+                break;
+            }
+        }
+    }
+}
+
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
     // store last keycode, row, and col for OLED
     keyball.last_kc  = keycode;
     keyball.last_pos = record->event.key;
+
+    pressing_keys_update(keycode, record);
 
     if (!process_record_user(keycode, record)) {
         return false;
