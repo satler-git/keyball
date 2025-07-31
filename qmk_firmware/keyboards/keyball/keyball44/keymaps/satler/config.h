@@ -39,7 +39,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #define DYNAMIC_KEYMAP_LAYER_COUNT 4
 
-#define KEYBALL_CPI_DEFAULT 400 // マウス速度 (default: 500)
+#define KEYBALL_CPI_DEFAULT 500 // マウス速度 (default: 500)
 #define KEYBALL_SCROLL_DIV_DEFAULT 6 // スクロール速度 (default: 4)
 
 #define POINTING_DEVICE_AUTO_MOUSE_ENABLE // 有効化
